@@ -1,2 +1,1 @@
-# DBLPC
-Differentiation of Behaviours in Learning Pheromone-based Communication
+# Differentiation of Behaviours in Learning Pheromone-based Communication
