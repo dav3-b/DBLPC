@@ -35,7 +35,7 @@ def run(env, params, episodes, visualizer=None):
             
                 reward_dict[str(ep)][str(agent)] += round(reward, 2)
             
-            cluster_dict[str(ep)] += round(env.avg_cluster2(), 2) 
+            cluster_dict[str(ep)] += round(env.avg_cluster(), 2) 
             if visualizer != None:
                 visualizer.render(
                     env.patches,

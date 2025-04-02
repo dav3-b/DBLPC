@@ -82,7 +82,6 @@ class Slime(AECEnv):
         self.lay_area = kwargs['lay_area']
         self.lay_amount = kwargs['lay_amount']
         self.evaporation = kwargs['evaporation']
-        self.follow_mode = kwargs['follow_mode']
         self.cluster_threshold = kwargs['cluster_threshold']
         self.cluster_radius = kwargs['cluster_radius']
         self.normalize_rewards = kwargs['normalize_rewards']
@@ -147,7 +146,7 @@ class Slime(AECEnv):
         # DOC {(x,y): [(x,y), ..., (x,y)]} pre-computed cluster-check for each patch, including itself
         self.cluster_patches = self._find_neighbours(self.cluster_radius)
 
-        # Agent's field of view
+        # Agent's random walk field of view
         self.fov = self._field_of_view(self.wiggle_patches)
         # Agent's pheromone field of view
         self.ph_fov = self._field_of_view(self.sniff_patches)
@@ -158,20 +157,12 @@ class Slime(AECEnv):
             for a in self.possible_agents
         }  # DOC 0 = walk, 1 = lay_pheromone, 2 = follow_pheromone
         
-        assert kwargs['obs_type'] in ("paper", "variation1", "variation2")
-        self.obs_type = kwargs['obs_type']
         # DOC obervation is an array of 8 real elements.
         # This array indicates the pheromone values in the 8 patches around the agent.
-        if self.obs_type == "paper":
-            self._observation_spaces = {
-                a: Box(low=0.0, high=np.inf, shape=(self.sniff_patches,), dtype=np.float32)
-                for a in self.possible_agents
-            }
-        elif self.obs_type == "variation1":
-            self._observation_spaces = {
-                a: Box(low=0.0, high=np.inf, shape=(self.sniff_patches + 1,), dtype=np.float32)
-                for a in self.possible_agents
-            }
+        self._observation_spaces = {
+            a: Box(low=0.0, high=np.inf, shape=(self.sniff_patches,), dtype=np.float32)
+            for a in self.possible_agents
+        }
 
         self.REWARD_MAX = self.cluster_reward + (((self.cluster_learners - 1) / self.cluster_threshold) * (self.cluster_reward ** 2))
 
@@ -264,24 +255,23 @@ class Slime(AECEnv):
         
         self.agent = self.agent_name_mapping[self.agent_selection]  # ID of agent
 
-        # Non dovrei calcolare il reward e le osservazioni dopo aver fatto un'azione???
         self.observations[str(self.agent)], self.cluster_ticks, self.rewards_cust = self.process_agent(
             self.cluster_ticks,
             self.rewards_cust,
         )
         
-        if action == 0:     # Walk
+        if action == 0:         # Walk: random-walk
             self.do_action0()
-        elif action == 1:   # Lay pheromone
+        elif action == 1:       # Lay pheromone: drop-chemical
             self.do_action1()
-        elif action == 2:   # Follow pheromone
+        elif action == 2:       # Follow pheromone: move-toward-chemical
             self.do_action2()
-        elif action == 3:   # Don't follow pheromone
+        elif action == 3:       # Avoid pheromone: move-away-chemical
             self.do_action3()
-        elif action == 4:   # Walk and Lay pheromone
+        elif action == 4:       # Walk and Lay pheromone: walk-and-drop
             self.do_action0()
             self.do_action1()
-        elif action == 5:   # Follow pheromone and Lay pheromone 
+        elif action == 5:       # Follow pheromone and Lay pheromone: move-and-drop 
             self.do_action2()
             self.do_action1()
         else:
@@ -331,74 +321,34 @@ class Slime(AECEnv):
                 cluster
             )
         
-        if self.obs_type == "paper":
-            observations = self._get_obs2(self.learners[self.agent])
-        elif self.obs_type == "variation1":
-            observations = self._get_obs3(self.learners[self.agent])
-
+        observations = self._get_obs(self.learners[self.agent])
         return observations, cluster_ticks, rewards_cust
 
-    def _get_obs(self, pos):
-        """
-        This method return the observation give by the env.
-        The array indicates the pheromone values in the 8 patches around the agent.
-        """
-        field_of_view = [
-            self._wrap(r, c)
-            for r in range(pos[0] - self.patch_size, pos[0] + 2 * self.patch_size, self.patch_size)
-            for c in range(pos[1] - self.patch_size, pos[1] + 2 * self.patch_size, self.patch_size)
-        ]
-        field_of_view.remove(pos)
-        obs = np.array([self.patches[f]["chemical"] for f in field_of_view])
-        return obs 
-
-    def _get_obs2(self, agent):
+    def _get_obs(self, agent):
         f, _ = self._get_new_positions(self.ph_fov, agent)
         obs = np.array([self.patches[tuple(i)]["chemical"] for i in f])
         return obs
 
-    def _get_obs3(self, agent):
-        f, _ = self._get_new_positions(self.ph_fov, agent)
-        obs = [self.patches[tuple(i)]["chemical"] for i in f]
-        obs.append(self.patches[agent["pos"]]["chemical"])
-        return np.array(obs)
-
     def do_action0(self):
-        self.patches, self.learners[self.agent] = self.walk2(self.patches, self.learners[self.agent])
+        self.patches, self.learners[self.agent] = self.walk(self.patches, self.learners[self.agent])
 
     def do_action1(self):
         self.patches = self.lay_pheromone(self.patches, self.learners[self.agent]['pos'])
 
     def do_action2(self):
-        if self.obs_type == "paper":
-            max_pheromone, max_coords, max_ph_dir = self._find_max_pheromone2(
-                self.learners[self.agent],
-                self.observations[str(self.agent)]       
+        max_pheromone, max_coords, max_ph_dir = self._find_max_pheromone(
+            self.learners[self.agent],
+            self.observations[str(self.agent)]       
+        )
+        if max_pheromone >= self.sniff_threshold:
+            self.patches, self.learners[self.agent] = self.follow_pheromone(
+                self.patches,
+                max_coords,
+                max_ph_dir,
+                self.learners[self.agent]
             )
-            if max_pheromone >= self.sniff_threshold:
-                self.patches, self.learners[self.agent] = self.follow_pheromone2(
-                    self.patches,
-                    max_coords,
-                    max_ph_dir,
-                    self.learners[self.agent]
-                )
-            else:
-                self.do_action0()
-        elif self.obs_type == "variation1":
-            max_pheromone, max_coords, max_ph_dir = self._find_max_pheromone3(
-                self.learners[self.agent],
-                self.observations[str(self.agent)]       
-            )
-            if max_pheromone >= self.sniff_threshold:
-                if max_coords != self.learners[self.agent]["pos"]:
-                    self.patches, self.learners[self.agent] = self.follow_pheromone2(
-                        self.patches,
-                        max_coords,
-                        max_ph_dir,
-                        self.learners[self.agent]
-                    )
-            else:
-                self.do_action0()
+        else:
+            self.do_action0()
 
     def do_action3(self):
         if np.any(self.observations[str(self.agent)] >= self.sniff_threshold):
@@ -412,21 +362,15 @@ class Slime(AECEnv):
         else:
             self.do_action0()
 
-    def convert_observation2(self, obs):
+    def convert_observation(self, obs):
         """
         This method returns the conversion of the observation to an integer.
         It's useful for IQL.
         """
-        if self.obs_type == "paper":
-            if np.unique(obs).shape[0] == 1:
-                obs_id = np.random.randint(self.sniff_patches)
-            else:
-                obs_id = obs.argmax().item()
-        elif self.obs_type == "variation1":
-            if np.unique(obs).shape[0] == 1:
-                obs_id = np.random.randint(self.sniff_patches + 1)
-            else:
-                obs_id = obs.argmax().item()
+        if np.unique(obs).shape[0] == 1:
+            obs_id = np.random.randint(self.sniff_patches)
+        else:
+            obs_id = obs.argmax().item()
         return obs_id
 
     def lay_pheromone(self, patches, pos):
@@ -459,7 +403,7 @@ class Slime(AECEnv):
         
         return patches
 
-    def walk2(self, patches, turtle):
+    def walk(self, patches, turtle):
         """
         Action 0: move in random direction (8 sorrounding cells)
         """      
@@ -475,6 +419,30 @@ class Slime(AECEnv):
 
         return patches, turtle
 
+    def follow_pheromone(self, patches, ph_coords, ph_dir, turtle):
+        """
+        Action 2: move turtle towards greatest pheromone found
+        """
+        patches[turtle['pos']]['turtles'].remove(self.agent)
+        turtle["pos"] = ph_coords
+        patches[turtle['pos']]['turtles'].append(self.agent)
+        turtle["dir"] = ph_dir
+        return patches, turtle
+
+    def _find_max_pheromone(self, agent, obs):
+        """
+        Following pheromone modeis controlled by param self.follow_mode:
+        """
+        f, direction = self._get_new_positions(self.ph_fov, agent)
+        idx = obs.argmax()
+        ph_val = obs[idx]
+        ph_pos = tuple(f[idx])
+        if self.sniff_patches < self.N_DIRS:
+            ph_dir = self._get_new_direction(self.sniff_patches, direction, idx)
+        else:
+            ph_dir = idx
+        return ph_val, ph_pos, ph_dir
+
     def avoid_pheromone(self, patches, ph_coords, ph_dir, turtle):
         """
         Action 3: avoid the pheromone.
@@ -485,80 +453,15 @@ class Slime(AECEnv):
         turtle["dir"] = ph_dir
         return patches, turtle
 
-    def follow_pheromone2(self, patches, ph_coords, ph_dir, turtle):
-        """
-        Action 2: move turtle towards greatest pheromone found
-        """
-        patches[turtle['pos']]['turtles'].remove(self.agent)
-        turtle["pos"] = ph_coords
-        patches[turtle['pos']]['turtles'].append(self.agent)
-        turtle["dir"] = ph_dir
-        return patches, turtle
-
-    def _find_max_pheromone2(self, agent, obs):
-        """
-        Following pheromone modeis controlled by param self.follow_mode:
-            'det' = follow greatest pheromone
-            'prob' = follow greatest pheromone probabilistically (pheromone strength as weight)
-        """
-        # Det = follow greatest pheromone
-        f, direction = self._get_new_positions(self.ph_fov, agent)
-        if self.follow_mode == "prob": 
-            total = obs.sum()
-            if total == 0.0:
-                probs = np.ones_like(obs) / obs.shape[0]
-            else:
-                probs = obs / obs.sum()
-            idx = np.random.choice(np.arange(obs.shape[0]), p=probs)
-        else:
-            idx = obs.argmax()
-        ph_val = obs[idx]
-        ph_pos = tuple(f[idx])
-        if self.sniff_patches < self.N_DIRS:
-            ph_dir = self._get_new_direction(self.sniff_patches, direction, idx)
-        else:
-            ph_dir = idx
-        return ph_val, ph_pos, ph_dir
-
-    def _find_max_pheromone3(self, agent, obs):
-        """
-        Following pheromone modeis controlled by param self.follow_mode:
-            'det' = follow greatest pheromone
-            'prob' = follow greatest pheromone probabilistically (pheromone strength as weight)
-        """
-        if self.follow_mode == "prob": 
-            total = obs.sum()
-            if total == 0.0:
-                probs = np.ones_like(obs) / obs.shape[0]
-            else:
-                probs = obs / obs.sum()
-            idx = np.random.choice(np.arange(obs.shape[0]), p=probs)
-        else:
-            idx = obs.argmax()
-        ph_val = obs[idx]
-        if idx == (obs.shape[0] - 1):
-            ph_pos = agent["pos"] 
-            ph_dir = agent["dir"]
-        else:
-            f, direction = self._get_new_positions(self.ph_fov, agent)
-            ph_pos = tuple(f[idx])
-            if self.sniff_patches < self.N_DIRS:
-                ph_dir = self._get_new_direction(self.sniff_patches, direction, idx)
-            else:
-                ph_dir = idx
-        return ph_val, ph_pos, ph_dir
-
     def _find_non_max_pheromone(self, agent, obs):
         f, direction = self._get_new_positions(self.ph_fov, agent)
         ids = np.where(obs < self.sniff_threshold)[0]
         
-        #if ids.shape[0] == obs.shape[0]:
         if ids.shape[0] == 0:
             idx = obs.argmin()
         else:
             idx = np.random.choice(ids)
 
-        #ph_val = obs[idx]
         ph_pos = tuple(f[idx])
         if self.sniff_patches < self.N_DIRS:
             ph_dir = self._get_new_direction(self.sniff_patches, direction, idx)
@@ -617,7 +520,7 @@ class Slime(AECEnv):
         
         return only_cluster, mixed_cluster, only_scatter, mixed_scatter
 
-    def avg_cluster2(self):
+    def avg_cluster(self):
         """
         Same compuation as avg_cluster.
         Use THIS for calculating the average, avg_cluster has a bug!
@@ -724,16 +627,10 @@ class Slime(AECEnv):
         for p in self.patches:
             self.patches[p]['chemical'] = 0.0
 
-        if self.obs_type == "paper":
-            self.observations = {
-                a: np.zeros(self.sniff_patches, dtype=np.float32)
-                for a in self.agents
-            }
-        elif self.obs_type == "variation1":
-            self.observations = {
-                a: np.zeros(self.sniff_patches + 1, dtype=np.float32)
-                for a in self.agents
-            }
+        self.observations = {
+            a: np.zeros(self.sniff_patches, dtype=np.float32)
+            for a in self.agents
+        }
         
         self._agent_selector.reinit(self.agents)
         self.agent_selection = self._agent_selector.next()
@@ -917,15 +814,12 @@ def main():
         "sniff_patches": 8, 
         "diffuse_area": 0.5,
         "diffuse_radius": 0,
-        "follow_mode": "det",
-        #"follow_mode": "prob",
         "wiggle_patches": 8,
         "lay_area": 1,
         "lay_amount": 3,
         "evaporation": 0.90,
         "cluster_threshold": 15,
         "cluster_radius": 3,
-        "obs_type": "paper",
         "normalize_rewards": False,
         "cluster_rew": 10,
         "cluster_penalty": 0,
@@ -976,7 +870,7 @@ def main():
                 env.fov,
                 env.ph_fov
             )
-        env.avg_cluster2()
+        env.avg_cluster()
 
     print("Total time = ", time.time() - start_time)
     env.close()

@@ -4,20 +4,19 @@
     "actions": [
         "random-walk",
         "drop-chemical",
-        "move-toward-chemical"
+        "move-toward-chemical",
+        "move-away-chemical"
     ],
     "sniff_threshold": 0.9,
     "sniff_patches": 5,
     "diffuse_area": 0.5,
     "diffuse_radius": 0,
-    "follow_mode": "det",
     "wiggle_patches": 5,
     "lay_area": 1,
     "lay_amount": 3,
     "evaporation": 0.95,
     "cluster_threshold": 1,
     "cluster_radius": 1,
-    "obs_type": "paper",
     "normalize_rewards": false,
     "cluster_rew": 10,
     "cluster_penalty": -1,
