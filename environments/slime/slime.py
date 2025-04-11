@@ -1,9 +1,10 @@
 import random
 import sys
-from typing import Optional
+from typing import Union, Optional
 import time
 
 import numpy as np
+from numpy.typing import NDArray
 from scipy.ndimage import gaussian_filter
 
 from gymnasium.spaces import Discrete, MultiBinary, Box
@@ -33,43 +34,42 @@ class Slime(AECEnv):
         if same_actions:
             return self.action_space('0').n.item()
 
-    metadata = {"render_modes": ["human", "server"]}
-
     def __init__(self, seed, render_mode: Optional[str] = None, **kwargs):
         """
-        :param sniff_threshold:     Controls how sensitive slimes are to pheromone (higher values make slimes less
-                                    sensitive to pheromone)—unclear effect on learning, could be negligible
-        :param diffuse_area         Controls the diffusion radius
-        :param follow_mode          Controls how non-learning agents follow pheromone:
-                                        'det' = follow greatest pheromone
-                                        'prob' = follow greatest pheromone probabilistically (pheromone strength as weight)
-        :param lay_area:            Controls the radius of the square area sorrounding the turtle where pheromone is laid
-        :param lay_amount:          Controls how much pheromone is laid
-        :param evaporation:         Controls how much pheromone evaporates at each step
-        :param cluster_threshold:   Controls the minimum number of slimes needed to consider an aggregate within
+        :param cluster_learners     Controls the number of clustering agents (red turtles). 
+        :param scatter_learners     Controls the number of scattering agents (blue turtles).
+        :param actions              Controls the actions performed by the agents.
+        :param sniff_threshold      Controls how sensitive slimes are to pheromone (higher values make slimes less
+                                    sensitive to pheromone)—unclear effect on learning, could be negligible.
+        :param sniff_patches        Controls the number of 1-hop neighboring patches in which the agent can smell the 
+                                    pheromone.
+        :param wiggle_patches       Controls the number of 1-hop neighboring patches the agent can move randomly through.
+        :param diffuse_area         Controls the standard deviation value (std) of the Gaussian function used to spread 
+                                    the pheromone in the environment.
+        :param diffure_radius       Controls the radius of the Gaussian function used to spread the pheromone in the 
+                                    environment.
+        :param lay_area             Controls the radius of the square area sorrounding the turtle where pheromone is laid.
+        :param lay_amount           Controls how much pheromone is laid.
+        :param evaporation          Controls how much pheromone evaporates at each step.
+        :param cluster_threshold    Controls the minimum number of slimes needed to consider an aggregate within
                                     cluster-radius a cluster (the higher the more difficult to consider an aggregate a
                                     cluster)—the higher the more difficult to obtain a positive reward for being within
-                                    a cluster for learning slimes
-        :param cluster_radius:      Controls the range considered by slimes to count other slimes within a cluster (the
+                                    a cluster for learning slimes.
+        :param cluster_radius       Controls the range considered by slimes to count other slimes within a cluster (the
                                     higher the easier to form clusters, as turtles far apart are still counted together)
                                     —the higher the easier it is to obtain a positive reward for being within a cluster
-                                    for learning slimes
-        :param rew:                 Base reward for being in a cluster
-        :param penalty:             Base penalty for not being in a cluster
-        :param episode_ticks:       Number of ticks for episode termination
-        :param W:                   Window width in # patches
-        :param H:                   Window height in # patches
-        :param PATCH_SIZE:          Patch size in pixels
-        :param TURTLE_SIZE:         Turtle size in pixels
-        :param FPS:                 Rendering FPS
-        :param SHADE_STRENGTH:      Strength of color shading for pheromone rendering (higher -> brighter color)
-        :param SHOW_CHEM_TEXT:      Whether to show pheromone amount on patches (when >= sniff-threshold)
-        :param CLUSTER_FONT_SIZE:   Font size of cluster number (for overlapping agents)
-        :param CHEMICAL_FONT_SIZE:  Font size of phermone amount (if SHOW_CHEM_TEXT is true)
-        :param render_mode:
+                                    for learning slimes.
+        :param normalize_rewards    If True the rewards are normalized (max value = 1.0).
+        :param cluster_rew:         Clustering agent base reward for being in a cluster.
+        :param cluster_penalty:     Clustering agent base penalty for not being in a cluster.
+        :param scatter_rew:         Scattering agent base reward for not being in a cluster.
+        :param scatter_penalty:     Scattering agent base penalty for being in a cluster.
+        :param episode_ticks:       Number of ticks for episode termination.
+        :param W:                   Window width in # patches.
+        :param H:                   Window height in # patches.
+        :param PATCH_SIZE:          Patch size in pixels.
+        :param TURTLE_SIZE:         Turtle size in pixels.
         """
-
-        assert render_mode is None or render_mode in self.metadata["render_modes"]
 
         np.random.seed(seed)
         random.seed(seed)
@@ -106,8 +106,6 @@ class Slime(AECEnv):
         assert (
             self.wiggle_patches in (1, 3, 5, 7, 8)
         ), "Error! wiggle_patches admitted values are: 1, 3, 5, 7, 8."
-        # Used to calculate the agent's directions.
-        # It's a personal convention.
 
         self.coords = []
         self.offset = self.patch_size // 2
@@ -170,8 +168,12 @@ class Slime(AECEnv):
             zip(self.possible_agents, list(range(pop_tot)))
         )
 
-    def _field_of_view(self, n_patches):
-        # Pre-compute every possible agent's direction
+    def _field_of_view(self, n_patches: int) -> dict[tuple[int], NDArray[np.int64]]:
+        """
+        For every possible agent's direction, pre-compute the group of patched, based on 'n_patches' value.
+        """
+        
+        # It's a personal convention.
         movements = np.array([
             (0, -self.patch_size),                  # dir 0
             (self.patch_size, -self.patch_size),    # dir 1
@@ -209,10 +211,18 @@ class Slime(AECEnv):
 
         return fov
 
-    def _find_neighbours(self, area: int):
+    def _wrap(self, x: int, y: int) -> tuple[int]:
         """
-        For each patch, find neighbouring patches within square radius 'area'
+        Wrap x,y coordinates around the torus.
         """
+
+        return x % self.W_pixels, y % self.H_pixels
+
+    def _find_neighbours(self, area: int) -> dict[tuple[int], tuple[int]]:
+        """
+        For each patch, find neighbouring patches within square radius 'area'.
+        """
+        
         neighbours = {}
         
         for p in self.patches:
@@ -237,18 +247,309 @@ class Slime(AECEnv):
 
         return neighbours
 
-    def _wrap(self, x: int, y: int):
+    def _compute_cluster(self, current_agent: int) -> int:
         """
-        Wrap x,y coordinates around the torus
-
-        :param x: the x coordinate to wrap
-        :param y: the y coordinate to wrap
-        :return: the wrapped x, y
+        Checks whether the learner turtle is within a cluster, given 'cluster_radius' and 'cluster_threshold'.
+        This computation doesn't take into account the 'current_agent'.
         """
-        return x % self.W_pixels, y % self.H_pixels
 
-    # learners act
-    def step(self, action: int):
+        cluster = -1
+        for p in self.cluster_patches[self.learners[current_agent]['pos']]:
+            cluster += len(self.patches[p]['turtles'])
+        
+        return cluster
+    
+    def reward_cluster_and_time_punish_time(
+        self,
+        cluster_ticks: dict[int, int],
+        rewards_cust: dict[int, list[float]],
+        cluster: int
+    ) -> tuple[dict[int, int], dict[int, list[float]], float]:
+        """
+        The clustering reward used in the article.
+        """
+
+        if cluster >= self.cluster_threshold:
+            cluster_ticks[self.agent] += 1
+
+        cur_reward = (cluster_ticks[self.agent] / self.episode_ticks) * self.cluster_reward + \
+                     (cluster / self.cluster_threshold) * (self.cluster_reward ** 2) + \
+                     (((self.episode_ticks - cluster_ticks[self.agent]) / self.episode_ticks) * self.cluster_penalty)
+        if self.normalize_rewards:
+            cur_reward = round(cur_reward / self.REWARD_MAX, 4)
+
+        rewards_cust[self.agent].append(cur_reward)
+
+        return cluster_ticks, rewards_cust, cur_reward
+    
+    def reward_scatter_and_time_punish_time(
+        self,
+        cluster_ticks: dict[int, int],
+        rewards_cust: dict[int, list[float]],
+        cluster: int
+    ) -> tuple[dict[int, int], dict[int, list[float]], float]:
+        """
+        The scattering reward used in the article.
+        """
+
+        if cluster >= self.cluster_threshold:
+            cluster_ticks[self.agent] += 1
+
+        cur_reward = (cluster_ticks[self.agent] / self.episode_ticks) * self.scatter_penalty - \
+                     (cluster / self.cluster_threshold) * (self.scatter_penalty ** 2) + \
+                     (((self.episode_ticks - cluster_ticks[self.agent]) / self.episode_ticks) * self.scatter_reward)
+        if self.normalize_rewards and self.scatter_reward != 0:
+            cur_reward = round(cur_reward / self.scatter_reward, 4)
+
+        rewards_cust[self.agent].append(cur_reward)
+
+        return cluster_ticks, rewards_cust, cur_reward
+
+    def _get_obs(self, agent: dict[tuple[int], int, str]) -> NDArray[np.float64]:
+        """
+        Get the new agent's observation.
+        """
+
+        f, _ = self._get_new_positions(self.ph_fov, agent)
+        obs = np.array([self.patches[tuple(i)]["chemical"] for i in f])
+        return obs
+
+    def process_agent(
+        self,
+        cluster_ticks: dict[int, int],
+        rewards_cust: dict[int, list[float]]
+    ) -> tuple[NDArray[np.float64], dict[int, int], dict[int, list[float]]]:
+        """
+        In this methods we compute the agent's reward and it's observation.
+        """
+
+        cluster = self._compute_cluster(self.agent)
+
+        if self.learners[self.agent]["mode"] == 'c':
+            cluster_ticks, rewards_cust, cur_reward = self.reward_cluster_and_time_punish_time(
+                cluster_ticks,
+                rewards_cust,
+                cluster
+            )
+        elif self.learners[self.agent]["mode"] == 's':
+            cluster_ticks, rewards_cust, cur_reward = self.reward_scatter_and_time_punish_time(
+                cluster_ticks,
+                rewards_cust,
+                cluster
+            )
+        
+        observations = self._get_obs(self.learners[self.agent])
+        
+        return observations, cluster_ticks, rewards_cust
+    
+    def _get_new_positions(
+        self, 
+        possible_patches: dict[tuple[int], NDArray[np.int64]],
+        agent: dict[tuple[int], int, str]
+    ) -> tuple[dict[tuple[int], NDArray[np.int64]], int]:
+        """
+        Get the new agent's position.
+        """
+        
+        pos = agent["pos"]
+        direction = agent["dir"]
+        if len(possible_patches[pos].shape) > 2:
+            return possible_patches[pos][direction], direction
+        else:
+            return possible_patches[pos], direction
+    
+    def _get_new_direction(self, n_patches: int, old_dir: int, idx_dir: int) -> int:
+        """
+        Get the new agent's direction.
+        """
+
+        start = (old_dir - (n_patches // 2)) % self.N_DIRS 
+        new_dirs = np.array([(i + start) % self.N_DIRS for i in range(n_patches)])
+        return new_dirs[idx_dir]
+    
+    def walk(
+        self,
+        patches: dict[tuple[int], dict[int, float, list[int]]],
+        turtle: dict[tuple[int], int, str]
+    ) -> tuple[dict[tuple[int], dict[int, float, list[int]]], dict[tuple[int], int, str]]:
+        """
+        Action 0: move in random direction ('wiggle_patches' sorrounding cells).
+        """
+
+        f, direction = self._get_new_positions(self.fov, turtle)
+        idx_dir = np.random.randint(f.shape[0])
+        patches[turtle['pos']]['turtles'].remove(self.agent)
+        turtle["pos"] = tuple(f[idx_dir])
+        patches[turtle['pos']]['turtles'].append(self.agent)
+        if self.wiggle_patches < self.N_DIRS:
+            turtle["dir"] = self._get_new_direction(self.wiggle_patches, direction, idx_dir)
+        else:
+            turtle["dir"] = idx_dir
+
+        return patches, turtle
+
+    def do_action0(self) -> None:
+        self.patches, self.learners[self.agent] = self.walk(self.patches, self.learners[self.agent])
+
+    def lay_pheromone(
+        self,
+        patches: dict[tuple[int], dict[int, float, list[int]]],
+        pos: tuple[int]
+    ) -> dict[tuple[int], dict[int, float, list[int]]]:
+        """
+        Action 1: lay 'amount' pheromone in square 'lay_area' centred in 'pos'.
+        """
+
+        for p in self.lay_patches[pos]:
+            patches[p]['chemical'] += self.lay_amount
+        
+        return patches
+    
+    def do_action1(self) -> None:
+        self.patches = self.lay_pheromone(self.patches, self.learners[self.agent]['pos'])
+
+    def _find_max_pheromone(
+        self,
+        agent: dict[tuple[int], int, str],
+        obs: NDArray[np.float64]
+    ) -> tuple[float, tuple[int], int]:
+        """
+        Find the position of the highest pheromone in agent's 'sniff_patches'.
+        """
+
+        f, direction = self._get_new_positions(self.ph_fov, agent)
+        idx = obs.argmax()
+        ph_val = obs[idx]
+        ph_pos = tuple(f[idx])
+        if self.sniff_patches < self.N_DIRS:
+            ph_dir = self._get_new_direction(self.sniff_patches, direction, idx)
+        else:
+            ph_dir = idx
+        return ph_val, ph_pos, ph_dir
+
+    def follow_pheromone(
+        self, 
+        patches: dict[tuple[int], dict[int, float, list[int]]],
+        ph_coords: tuple[int],
+        ph_dir: int,
+        turtle: dict[tuple[int], int, str]
+    ) -> tuple[dict[tuple[int], dict[int, float, list[int]]], dict[tuple[int], int, str]]:
+        """
+        Action 2: move turtle towards greatest pheromone found.
+        """
+
+        patches[turtle['pos']]['turtles'].remove(self.agent)
+        turtle["pos"] = ph_coords
+        patches[turtle['pos']]['turtles'].append(self.agent)
+        turtle["dir"] = ph_dir
+        return patches, turtle
+
+    def do_action2(self) -> None:
+        """
+        Try to follow the pheromone, if you can't execute action 0.
+        """
+
+        max_pheromone, max_coords, max_ph_dir = self._find_max_pheromone(
+            self.learners[self.agent],
+            self.observations[str(self.agent)]       
+        )
+        if max_pheromone >= self.sniff_threshold:
+            self.patches, self.learners[self.agent] = self.follow_pheromone(
+                self.patches,
+                max_coords,
+                max_ph_dir,
+                self.learners[self.agent]
+            )
+        else:
+            self.do_action0()
+
+    def _find_non_max_pheromone(
+        self,
+        agent: dict[tuple[int], int, str],
+        obs: NDArray[np.float64]
+    ) -> tuple[tuple[int], int]:
+        """
+        Find the position of the lowest pheromone in agent's 'sniff_patches' if possible, else make a random choice.
+        """
+
+        f, direction = self._get_new_positions(self.ph_fov, agent)
+        ids = np.where(obs < self.sniff_threshold)[0]
+        
+        if ids.shape[0] == 0:
+            idx = obs.argmin()
+        else:
+            idx = np.random.choice(ids)
+
+        ph_pos = tuple(f[idx])
+        if self.sniff_patches < self.N_DIRS:
+            ph_dir = self._get_new_direction(self.sniff_patches, direction, idx)
+        else:
+            ph_dir = idx
+        return ph_pos, ph_dir
+    
+    def avoid_pheromone(
+        self, 
+        patches: dict[tuple[int], dict[int, float, list[int]]],
+        ph_coords: tuple[int],
+        ph_dir: int,
+        turtle: dict[tuple[int], int, str]
+    ) -> tuple[dict[tuple[int], dict[int, float, list[int]]], dict[tuple[int], int, str]]:
+        """
+        Action 3: avoid the pheromone.
+        """
+    
+        patches[turtle['pos']]['turtles'].remove(self.agent)
+        turtle["pos"] = ph_coords
+        patches[turtle['pos']]['turtles'].append(self.agent)
+        turtle["dir"] = ph_dir
+        return patches, turtle
+    
+    def do_action3(self) -> None:
+        """
+        Try to avoid the pheromone, if you can't execute action 0.
+        """
+
+        if np.any(self.observations[str(self.agent)] >= self.sniff_threshold):
+            ph_pos, ph_dir = self._find_non_max_pheromone(self.learners[self.agent], self.observations[str(self.agent)])
+            self.patches, self.learners[self.agent] = self.avoid_pheromone(
+                self.patches,
+                ph_pos,
+                ph_dir,
+                self.learners[self.agent]
+            )
+        else:
+            self.do_action0()
+    
+    def _diffuse_and_evaporate(
+        self,
+        patches: dict[tuple[int], dict[int, float, list[int]]]
+    ) -> dict[tuple[int], dict[int, float, list[int]]]:
+        """
+        This diffuse method use a gaussian filter for the process.
+        This is a kind of parallel diffusion.
+        Evaporates pheromone from each patch according to param self.evaporation.
+        """
+
+        # Diffusion
+        grid = np.array([patches[p]["chemical"] for p in patches.keys()]).reshape((self.W, self.H))
+        if self.diffuse_radius == 0:
+            grid = gaussian_filter(grid, sigma=self.diffuse_area, mode="wrap")
+        else:
+            grid = gaussian_filter(grid, sigma=self.diffuse_area, radius=self.diffuse_radius, mode="wrap")
+        grid = grid.flatten()
+        # Evaporation
+        grid *= self.evaporation
+        # Write values
+        for p, g in zip(patches, grid):
+            patches[p]['chemical'] = g
+        
+        return patches
+
+    def step(self, action: int) -> None:
+        """
+        Step method, learners act.
+        """
+
         if(self.terminations[self.agent_selection] or self.truncations[self.agent_selection]):
             self._was_dead_step(action)
             return
@@ -288,206 +589,38 @@ class Slime(AECEnv):
         self.agent_selection = self._agent_selector.next()
         self._cumulative_rewards[str(self.agent)] = 0
         self._accumulate_rewards()
-        
-    def _get_new_positions(self, possible_patches, agent):
-        pos = agent["pos"]
-        direction = agent["dir"]
-        if len(possible_patches[pos].shape) > 2:
-            return possible_patches[pos][direction], direction
-        else:
-            return possible_patches[pos], direction
-    
-    def _get_new_direction(self, n_patches, old_dir, idx_dir):
-        start = (old_dir - (n_patches // 2)) % self.N_DIRS 
-        new_dirs = np.array([(i + start) % self.N_DIRS for i in range(n_patches)])
-        return new_dirs[idx_dir]
 
-    def process_agent(self, cluster_ticks, rewards_cust):
-        """
-        In this methods we compute the agent's reward and it's observation.
-        """
-        cluster = self._compute_cluster(self.agent)
-
-        if self.learners[self.agent]["mode"] == 'c':
-            cluster_ticks, rewards_cust, cur_reward = self.reward_cluster_and_time_punish_time(
-                cluster_ticks,
-                rewards_cust,
-                cluster
-            )
-        elif self.learners[self.agent]["mode"] == 's':
-            cluster_ticks, rewards_cust, cur_reward = self.reward_scatter_and_time_punish_time(
-                cluster_ticks,
-                rewards_cust,
-                cluster
-            )
-        
-        observations = self._get_obs(self.learners[self.agent])
-        return observations, cluster_ticks, rewards_cust
-
-    def _get_obs(self, agent):
-        f, _ = self._get_new_positions(self.ph_fov, agent)
-        obs = np.array([self.patches[tuple(i)]["chemical"] for i in f])
-        return obs
-
-    def do_action0(self):
-        self.patches, self.learners[self.agent] = self.walk(self.patches, self.learners[self.agent])
-
-    def do_action1(self):
-        self.patches = self.lay_pheromone(self.patches, self.learners[self.agent]['pos'])
-
-    def do_action2(self):
-        max_pheromone, max_coords, max_ph_dir = self._find_max_pheromone(
-            self.learners[self.agent],
-            self.observations[str(self.agent)]       
-        )
-        if max_pheromone >= self.sniff_threshold:
-            self.patches, self.learners[self.agent] = self.follow_pheromone(
-                self.patches,
-                max_coords,
-                max_ph_dir,
-                self.learners[self.agent]
-            )
-        else:
-            self.do_action0()
-
-    def do_action3(self):
-        if np.any(self.observations[str(self.agent)] >= self.sniff_threshold):
-            ph_pos, ph_dir = self._find_non_max_pheromone(self.learners[self.agent], self.observations[str(self.agent)])
-            self.patches, self.learners[self.agent] = self.avoid_pheromone(
-                self.patches,
-                ph_pos,
-                ph_dir,
-                self.learners[self.agent]
-            )
-        else:
-            self.do_action0()
-
-    def convert_observation(self, obs):
+    def convert_observation(self, obs: NDArray[np.float64]) -> int:
         """
         This method returns the conversion of the observation to an integer.
         It's useful for IQL.
         """
+        
         if np.unique(obs).shape[0] == 1:
             obs_id = np.random.randint(self.sniff_patches)
         else:
             obs_id = obs.argmax().item()
         return obs_id
 
-    def lay_pheromone(self, patches, pos):
+    def _compute_avg_cluster(self, clusters: list[list[int]]) -> float:
         """
-        Lay 'amount' pheromone in square 'area' centred in 'pos'
+        Compute the cluster length.
         """
-        for p in self.lay_patches[pos]:
-            patches[p]['chemical'] += self.lay_amount
-        
-        return patches
 
-    def _diffuse_and_evaporate(self, patches):
-        """
-        This diffuse method use a gaussian filter for the process.
-        This is a kind of parallel diffusion.
-        Evaporates pheromone from each patch according to param self.evaporation
-        """
-        # Diffusion
-        grid = np.array([patches[p]["chemical"] for p in patches.keys()]).reshape((self.W, self.H))
-        if self.diffuse_radius == 0:
-            grid = gaussian_filter(grid, sigma=self.diffuse_area, mode="wrap")
-        else:
-            grid = gaussian_filter(grid, sigma=self.diffuse_area, radius=self.diffuse_radius, mode="wrap")
-        grid = grid.flatten()
-        # Evaporation
-        grid *= self.evaporation
-        # Write values
-        for p, g in zip(patches, grid):
-            patches[p]['chemical'] = g
-        
-        return patches
-
-    def walk(self, patches, turtle):
-        """
-        Action 0: move in random direction (8 sorrounding cells)
-        """      
-        f, direction = self._get_new_positions(self.fov, turtle)
-        idx_dir = np.random.randint(f.shape[0])
-        patches[turtle['pos']]['turtles'].remove(self.agent)
-        turtle["pos"] = tuple(f[idx_dir])
-        patches[turtle['pos']]['turtles'].append(self.agent)
-        if self.wiggle_patches < self.N_DIRS:
-            turtle["dir"] = self._get_new_direction(self.wiggle_patches, direction, idx_dir)
-        else:
-            turtle["dir"] = idx_dir
-
-        return patches, turtle
-
-    def follow_pheromone(self, patches, ph_coords, ph_dir, turtle):
-        """
-        Action 2: move turtle towards greatest pheromone found
-        """
-        patches[turtle['pos']]['turtles'].remove(self.agent)
-        turtle["pos"] = ph_coords
-        patches[turtle['pos']]['turtles'].append(self.agent)
-        turtle["dir"] = ph_dir
-        return patches, turtle
-
-    def _find_max_pheromone(self, agent, obs):
-        """
-        Following pheromone modeis controlled by param self.follow_mode:
-        """
-        f, direction = self._get_new_positions(self.ph_fov, agent)
-        idx = obs.argmax()
-        ph_val = obs[idx]
-        ph_pos = tuple(f[idx])
-        if self.sniff_patches < self.N_DIRS:
-            ph_dir = self._get_new_direction(self.sniff_patches, direction, idx)
-        else:
-            ph_dir = idx
-        return ph_val, ph_pos, ph_dir
-
-    def avoid_pheromone(self, patches, ph_coords, ph_dir, turtle):
-        """
-        Action 3: avoid the pheromone.
-        """
-        patches[turtle['pos']]['turtles'].remove(self.agent)
-        turtle["pos"] = ph_coords
-        patches[turtle['pos']]['turtles'].append(self.agent)
-        turtle["dir"] = ph_dir
-        return patches, turtle
-
-    def _find_non_max_pheromone(self, agent, obs):
-        f, direction = self._get_new_positions(self.ph_fov, agent)
-        ids = np.where(obs < self.sniff_threshold)[0]
-        
-        if ids.shape[0] == 0:
-            idx = obs.argmin()
-        else:
-            idx = np.random.choice(ids)
-
-        ph_pos = tuple(f[idx])
-        if self.sniff_patches < self.N_DIRS:
-            ph_dir = self._get_new_direction(self.sniff_patches, direction, idx)
-        else:
-            ph_dir = idx
-        return ph_pos, ph_dir
-
-    def _compute_cluster(self, current_agent):
-        """
-        Checks whether the learner turtle is within a cluster, given 'cluster_radius' and 'cluster_threshold'
-        """
-        #cluster = 0
-        cluster = -1
-        for p in self.cluster_patches[self.learners[current_agent]['pos']]:
-            cluster += len(self.patches[p]['turtles'])
-        
-        return cluster
-
-    def _compute_avg_cluster(self, clusters):
         cluster_sum = 0
         for cluster in clusters:
             cluster_sum += len(cluster)
 
         return cluster_sum / len(clusters)
 
-    def _get_double_agent_clusters(self, clusters):
+    def _get_double_agent_clusters(
+        self, 
+        clusters: list[list[int]]
+    ) -> tuple[list[list[int]], list[list[int]], list[list[int]], list[list[int]]]:
+        """
+        Separate cluster length computation by agent type.
+        """
+
         only_cluster = []
         only_scatter = []
         mixed_cluster = []
@@ -520,11 +653,11 @@ class Slime(AECEnv):
         
         return only_cluster, mixed_cluster, only_scatter, mixed_scatter
 
-    def avg_cluster(self):
+    def avg_cluster(self) -> Union[float, tuple[float]]:
         """
-        Same compuation as avg_cluster.
-        Use THIS for calculating the average, avg_cluster has a bug!
+        Compute the average cluster.
         """
+
         cluster_sizes = []  # registra la dim. dei cluster
         for l in self.learners:
             cluster = []  # tiene conto di quali turtle sono in quel cluster
@@ -564,41 +697,11 @@ class Slime(AECEnv):
 
             return avg_only_cluster, avg_mixed_cluster, avg_only_scatter, avg_mixed_scatter
 
-    def reward_cluster_and_time_punish_time(self, cluster_ticks, rewards_cust, cluster):
-        """
-        The clustering reward used in the article.
-        """
-        if cluster >= self.cluster_threshold:
-            cluster_ticks[self.agent] += 1
 
-        cur_reward = (cluster_ticks[self.agent] / self.episode_ticks) * self.cluster_reward + \
-                     (cluster / self.cluster_threshold) * (self.cluster_reward ** 2) + \
-                     (((self.episode_ticks - cluster_ticks[self.agent]) / self.episode_ticks) * self.cluster_penalty)
-        if self.normalize_rewards:
-            cur_reward = round(cur_reward / self.REWARD_MAX, 4)
-
-        rewards_cust[self.agent].append(cur_reward)
-        return cluster_ticks, rewards_cust, cur_reward
-    
-    def reward_scatter_and_time_punish_time(self, cluster_ticks, rewards_cust, cluster):
+    def reset(self, seed=None, return_info=True, options=None) -> None:
         """
-        The scattering reward used in the article.
-        """
-        if cluster >= self.cluster_threshold:
-            cluster_ticks[self.agent] += 1
+        Reset the environment.
 
-        cur_reward = (cluster_ticks[self.agent] / self.episode_ticks) * self.scatter_penalty - \
-                     (cluster / self.cluster_threshold) * (self.scatter_penalty ** 2) + \
-                     (((self.episode_ticks - cluster_ticks[self.agent]) / self.episode_ticks) * self.scatter_reward)
-        if self.normalize_rewards and self.scatter_reward != 0:
-            cur_reward = round(cur_reward / self.scatter_reward, 4)
-
-        rewards_cust[self.agent].append(cur_reward)
-        return cluster_ticks, rewards_cust, cur_reward
-
-    def reset(self, seed=None, return_info=True, options=None):
-        """
-        Reset env.
         """
         # empty stuff
         pop_tot = self.cluster_learners + self.scatter_learners
@@ -646,12 +749,20 @@ GREEN = (0, 190, 0)
 YELLOW = (250, 250, 0)
 
 class SlimeVisualizer:
-    def __init__(
-        self,
-        W_pixels,
-        H_pixels,
-        **kwargs
-    ):
+    def __init__(self, W_pixels, H_pixels, **kwargs):
+        """
+        :param FPS                  Rendering FPS.
+        :param SHADE_STRENGTH       Strength of color shading for pheromone rendering (higher -> brighter color).
+        :param SHOW_CHEM_TEXT       Whether to show pheromone amount on patches (when >= sniff-threshold).
+        :param CLUSTER_FONT_SIZE    Font size of cluster number (for overlapping agents).
+        :param CHEMICAL_FONT_SIZE   Font size of phermone amount (if SHOW_CHEM_TEXT is true).
+        :param PATCH_SIZE:          Patch size in pixels.
+        :param TURTLE_SIZE:         Turtle size in pixels.
+        :param wiggle_patches       Controls the number of 1-hop neighboring patches the agent can move randomly through.
+        :param show_dirs_view       Render the agents directions (for debugging purpose).
+        :param show_ph_view         Render the pheromone the agents sense (for debugging purpose).
+        """
+
         self.fps = kwargs['FPS']
         self.shade_strength = kwargs['SHADE_STRENGTH']
         self.show_chem_text = kwargs['SHOW_CHEM_TEXT']
@@ -678,7 +789,11 @@ class SlimeVisualizer:
             self.dirs = self._get_dirs()
         self.show_ph_view = kwargs["show_ph_view"]
 
-    def _get_dirs(self):
+    def _get_dirs(self) -> NDArray[np.int64]:
+        """
+        Get the agent's direction.
+        """
+        
         central = self.wiggle_patches // 2
         sliding_window = []
         
@@ -689,15 +804,20 @@ class SlimeVisualizer:
             sliding_window.append(tmp)
         
         sliding_window = sorted(sliding_window, key=lambda x: x[central])
+
         return np.array(sliding_window)
 
     def render(
         self,
-        patches,
-        learners,
-        fov,
-        ph_fov
-    ):
+        patches: dict[tuple[int], dict[int, float, list[int]]],
+        learners: dict[int, dict[tuple[int], int, str]],
+        fov: dict[tuple[int], NDArray[np.int64]],
+        ph_fov: dict[tuple[int], NDArray[np.int64]]
+    ) -> NDArray[np.uint8]:
+        """
+        Render the environment.
+        """
+
         for event in pygame.event.get():
             if event.type == pygame.QUIT:  # window closed -> program quits
                 pygame.quit()
@@ -735,6 +855,7 @@ class SlimeVisualizer:
                 self.turtle_size // 2
             )
 
+            # Show agent's directions
             if self.show_dirs_view:
                 if len(fov[learner["pos"]].shape) > 2:
                     view = fov[learner["pos"]][learner["dir"]]
@@ -757,6 +878,7 @@ class SlimeVisualizer:
                     text = self.cluster_font.render(str(d), True, BLACK)
                     self.screen.blit(text, text.get_rect(center=f))
 
+            # Show pheromone sense by the agent
             if self.show_ph_view:
                 if len(ph_fov[learner["pos"]].shape) > 2:
                     ph = ph_fov[learner["pos"]][learner["dir"]]
@@ -793,7 +915,11 @@ class SlimeVisualizer:
 
         return pygame.surfarray.array3d(self.screen)
 
-    def close(self):
+    def close(self) -> None:
+        """
+        Close the rendering.
+        """
+
         if self.screen is not None:
             pygame.display.quit()
             pygame.quit()
