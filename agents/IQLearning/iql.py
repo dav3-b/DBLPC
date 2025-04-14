@@ -4,6 +4,11 @@ import numpy as np
 from tqdm import tqdm
 
 def create_agent(params: dict, l_params: dict, n_obs, n_actions, train):
+    """
+    Return useful data structures for logginig metrics and, if 'train' is True, return qtable
+    and all qlearning parameters.
+    """
+
     learner_population = params["cluster_learners"] + params["scatter_learners"]
     episodes =  l_params["train_episodes"] if train else l_params["test_episodes"]
     # DOC dict che tiene conto della frequenza di scelta delle action per ogni episodio {episode: {action: _, action: _, ...}}
@@ -126,6 +131,10 @@ def train(
         logger,
         visualizer=None
     ):
+    """
+    Training function.
+    """
+
     
     n_actions = env.actions_n()
     old_s = {}  # DOC old state for each agent {agent: old_state}
@@ -146,6 +155,8 @@ def train(
         for tick in tqdm(range(1, params['episode_ticks'] + 1), desc="TICKS", colour='green', position=1, leave=False):
             for agent in env.agent_iter(max_iter=AGENTS_NUM):
                 cur_state, reward, _, _, _ = env.last(agent)
+
+                # convert the observation into the qtable state
                 cur_s = env.convert_observation(cur_state)
 
                 if ep == 1 and tick == 1:
@@ -163,6 +174,7 @@ def train(
                     else:
                         action = np.argmax(qtable[int(agent)][cur_s])
 
+                # step
                 if n_actions == 3:
                     if env.learners[int(agent)]["mode"] == 's':
                         env.step(scatter_actions[action].item())
@@ -171,9 +183,11 @@ def train(
                 else:
                     env.step(action)
 
+                # save old state and action
                 old_s[agent] = cur_s
                 old_a[agent] = action
 
+                # update metrics
                 if env.learners[int(agent)]["mode"] == 'c':
                     cluster_actions_dict[str(ep)][str(action)] += 1
                     cluster_action_dict[str(ep)][str(agent)][str(action)] += 1
@@ -183,6 +197,7 @@ def train(
                     scatter_action_dict[str(ep)][str(agent)][str(action)] += 1
                     scatter_reward_dict[str(ep)][str(agent)] += round(reward, 2)
                 
+            # get the avg cluster
             if env.cluster_learners == 0 or env.scatter_learners == 0:
                 cluster_dict[str(ep)] += round(env.avg_cluster(), 2) 
             else:
@@ -197,6 +212,7 @@ def train(
                 only_scatter_dict[str(ep)] += round(avg_only_scatter, 2)
                 mixed_scatter_dict[str(ep)] += round(avg_mixed_scatter, 2)
             
+            # render the environment
             if visualizer != None:
                 visualizer.render(
                     env.patches,
@@ -205,11 +221,13 @@ def train(
                     env.ph_fov
                 )
         
+        # epsilon decay
         if decay_type == "log":
             epsilon = max(epsilon * decay, epsilon_min)
         elif decay_type == "linear":
             epsilon = max(epsilon - (1 - decay), epsilon_min)
         
+        # log metrics
         if ep % train_log_every == 0:
             value = [ep, tick * ep]
             
@@ -245,6 +263,7 @@ def train(
             
             logger.load_value(value)
 
+            # print metrics
             if ep % print_metrics == 0:
                 print("\nMetrics ")
                 if env.cluster_learners > 0 and env.scatter_learners == 0:
@@ -263,6 +282,7 @@ def train(
                     print(" - scatter_reward: ", scatter_avg_rew)
                 print(" - epsilon: ", eps)
 
+    # close
     logger.empty_table()
     env.close()
     if visualizer != None:
@@ -287,6 +307,11 @@ def eval(
         logger,
         visualizer=None
     ):
+    """
+    Evaluation/Test function.
+    """
+
+
     # DOC Evaluate agent's performance after Q-learning
     n_actions = env.actions_n()
     scatter_actions = np.array([0, 1, 3])
@@ -303,9 +328,14 @@ def eval(
         for tick in tqdm(range(1, params['episode_ticks'] + 1), desc="TICKS", colour='green', leave=False):
             for agent in env.agent_iter(max_iter=AGENTS_NUM):
                 state, reward, _, _, _ = env.last(agent)
-                s = env.convert_observation(state)
-                action = np.argmax(qtable[int(agent)][s])
                 
+                # convert the observation into the qtable state
+                s = env.convert_observation(state)
+                
+                # choose the best action
+                action = np.argmax(qtable[int(agent)][s])
+
+                # env step 
                 if n_actions == 3:
                     if env.learners[int(agent)]["mode"] == 's':
                         env.step(scatter_actions[action].item())
@@ -314,6 +344,7 @@ def eval(
                 else:
                     env.step(action)
                 
+                # update metrics
                 if env.learners[int(agent)]["mode"] == 'c':
                     cluster_actions_dict[str(ep)][str(action)] += 1
                     cluster_action_dict[str(ep)][str(agent)][str(action)] += 1
@@ -323,6 +354,7 @@ def eval(
                     scatter_action_dict[str(ep)][str(agent)][str(action)] += 1
                     scatter_reward_dict[str(ep)][str(agent)] += round(reward, 2)
             
+            # get the avg cluster
             if env.cluster_learners == 0 or env.scatter_learners == 0:
                 cluster_dict[str(ep)] += round(env.avg_cluster(), 2) 
             else:
@@ -337,6 +369,7 @@ def eval(
                 only_scatter_dict[str(ep)] += round(avg_only_scatter, 2)
                 mixed_scatter_dict[str(ep)] += round(avg_mixed_scatter, 2)
 
+            # render the environment
             if visualizer != None:
                 visualizer.render(
                     env.patches,
@@ -345,6 +378,7 @@ def eval(
                     env.ph_fov
                 )
         
+        # log metrics
         if ep % test_log_every == 0:
             value = [ep, tick * ep]
             
@@ -377,6 +411,7 @@ def eval(
             
             logger.load_value(value)
     
+    # close
     logger.empty_table()
     env.close()
     if visualizer != None:

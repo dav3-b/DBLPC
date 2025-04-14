@@ -5,9 +5,15 @@ import json
 import numpy as np
 import random
 from environments.slime.slime import Slime
+from agents.utils.logger import Logger
 from agents.IQLearning import iql
 
-def read_params(params_path: str, learning_params_path: str, visualizer_params_path: str, logger_params_path):
+def read_params(
+    params_path: str, 
+    learning_params_path: str, 
+    visualizer_params_path: str, 
+    logger_params_path: str
+) -> tuple[dict, dict, dict, dict]:
     params, l_params, v_params, log_params = dict(), dict(), dict(), dict()
 
     try:
@@ -36,8 +42,17 @@ def read_params(params_path: str, learning_params_path: str, visualizer_params_p
         
     return params, l_params, v_params, log_params
 
-def create_logger(curdir, params, l_params, log_params, train, weights_path=None):
-    from agents.utils.logger import Logger
+def create_logger(
+    curdir: str,
+    params: dict,
+    l_params: dict,
+    log_params: dict,
+    train: bool,
+    weights_path=None
+) -> tuple[Logger, int]:
+    """
+    Create the logger object to log useful metrics.
+    """
     
     log_every = log_params["train_log_every"] if train else log_params["test_log_every"]
     buffer_size = log_params["buffer_size"]
@@ -52,9 +67,15 @@ def create_logger(curdir, params, l_params, log_params, train, weights_path=None
     )
     return log, log_every
 
-def main(args):
+def main(args: argparse.Namespace) -> None:
+    """
+    Main function.
+    """
+
+    # set random seed
     random.seed(args.random_seed)
     np.random.seed(args.random_seed)
+
     curdir = os.path.dirname(os.path.abspath(__file__))
     
     params, l_params, v_params, log_params = read_params(
@@ -162,7 +183,7 @@ def main(args):
         logger.save_computation_time(test_end - test_start, train=False)
         print(f"\nTesting time: {test_end - test_start}")
    
-def check_args(args):
+def check_args(args: argparse.Namespace) -> bool:
     assert (
         args.params_path != ""
         and os.path.isfile(args.params_path)

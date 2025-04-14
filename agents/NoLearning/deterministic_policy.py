@@ -1,16 +1,27 @@
 import numpy as np
 from tqdm import tqdm
+from numpy.typing import NDArray
 
-def policy(state, threshold):
+def policy(state: NDArray[np.float64], threshold: float):
+    """
+    Choose an action using a deterministic policy.
+    """
+
     if np.all(state > threshold):
         action = 5
     else:
         action = 4
     return action
 
-def run(env, params, episodes, visualizer=None):
+def run(env, params: dict, episodes: int, visualizer=None):
+    """
+    Run the simulation.
+    """
+
     assert(params["scatter_learners"] == 0), "Only clustering agents are allowed, scattering agents must be 0!"
     learner_population = params['cluster_learners']
+    
+    # metrics data structs 
     reward_dict = {
         str(ep): {
             str(ag): 0 

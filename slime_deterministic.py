@@ -10,7 +10,7 @@ import random
 from environments.slime.slime import Slime
 from agents.NoLearning import deterministic_policy 
 
-def read_params(params_path: str, visualizer_params_path: str):
+def read_params(params_path: str, visualizer_params_path: str) -> tuple[dict, dict]:
     params, v_params = dict(), dict()
 
     try:
@@ -27,7 +27,11 @@ def read_params(params_path: str, visualizer_params_path: str):
     
     return params, v_params
 
-def plot_metrics(avg_rew, avg_cluster):
+def plot_metrics(avg_rew: float, avg_cluster: float) -> None:
+    """
+    Plot metrics. 
+    """
+
     import matplotlib.pyplot as plt
 
     avg_rew = np.array(avg_rew)
@@ -83,7 +87,11 @@ def plot_metrics(avg_rew, avg_cluster):
     cluster_file_name = "Cluster_plot_" + datetime.datetime.now().strftime("%m_%d_%Y__%H_%M_%S") + ".png"
     fig1.savefig(cluster_file_name)
 
-def main(args):
+def main(args: argparse.Namespace) -> None:
+    """
+    Main function.
+    """
+
     random.seed(args.random_seed)
     np.random.seed(args.random_seed)
     curdir = os.path.dirname(os.path.abspath(__file__))
@@ -109,7 +117,7 @@ def main(args):
     plot_metrics(avg_rew, avg_cluster)
     print("Plotting is done!")
 
-def check_args(args):
+def check_args(args: argparse.Namespace) -> bool:
     assert (
         args.params_path != ""
         and os.path.isfile(args.params_path)
